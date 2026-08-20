@@ -27,14 +27,16 @@ jobs:
         run: |
           brew tap evojewel/tap
           brew install --build-bottle evojewel/tap/gigback
-          brew bottle evojewel/tap/gigback \
+          brew bottle evojewel/tap/gigback --no-rebuild \
             --root-url="https://github.com/evojewel/gigback/releases/download/${{ inputs.tag }}"
 
       - name: Retag bottle as 'all' (contents are platform-independent)
         id: retag
         run: |
-          src=$(ls gigback--*.bottle.tar.gz)
-          ver=$(echo "$src" | sed -E 's/^gigback--([^.]+(\.[0-9]+)*)\..*/\1/')
+          src=$(ls gigback--*.tar.gz)
+          left=${src%%.bottle.*}      # gigback--<ver>.<os_tag>
+          tag=${left##*.}             # e.g. arm64_tahoe
+          ver=${left#gigback--}; ver=${ver%".$tag"}
           dst="gigback-${ver}.all.bottle.tar.gz"
           mv "$src" "$dst"
           echo "sha=$(shasum -a 256 "$dst" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
