@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+#
+# gigback — get your gigabytes back. Only deletes what grows back.
+# https://github.com/evojewel/gigback
+#
+# Safety model: see lib/targets.sh. Deletion only ever happens through the
+# tier table there; DATA-tier targets have no delete path in the codebase.
+
+set -u
+set -o pipefail
+
+VERSION="0.1.0"
+
+# Resolve real script location (through brew and dev symlinks)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+GB_ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+
+# Defaults for flags (lib reads STALE_DAYS / KEEP_RUNTIMES)
+STALE_DAYS=90
+KEEP_RUNTIMES=""
+APPLY=0
+CHECK=0
+YES=0
+JSON=0
+
+# shellcheck source=lib/targets.sh
+. "$GB_ROOT/lib/targets.sh"
+
+usage() {
+  cat <<'EOF'
+gigback — get your gigabytes back. Only deletes what grows back.
+
+USAGE
+  gigback scan                Read-only report of all tiers. Always safe.
+  gigback clean               DRY-RUN plan for SAFE targets (default: no deletion)
+  gigback clean --apply       Execute the SAFE plan (one y/N confirm)
+  gigback clean --check       Include CHECK tier; every item confirmed one by one
+  gigback report              DATA tier sizes and guidance. Never deletes.
+  gigback log                 Show what past runs deleted
+  gigback --version | --help
+
+FLAGS
+  --projects-dir <path>   Where your repos live (default ~/Projects)
+  --stale-days <n>        node_modules staleness threshold (default 90)
+  --keep-runtime <ver>    iOS runtime version to keep besides the newest (repeatable)
+  --yes                   Skip the SAFE confirm. Refused together with --check.
+  --json                  Machine-readable scan output
+
+TIERS
+  SAFE   caches & build artifacts that regenerate automatically
+  CHECK  regenerable but context-dependent — confirmed item by item
+  DATA   databases & editor state — gigback reports sizes, never deletes
+
+The one rule: gigback only deletes what it can name the regeneration
+command for. Everything else is yours to review.
+EOF
+}
+
+die() { echo "gigback: $*" >&2; exit 2; }
+
+confirm() { # $1: prompt -> 0 if user says yes
+  local a
+  printf '%s [y/N] ' "$1"
+  read -r a
+  case "$a" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+log_line() { # $1 target, $2 kb, $3 cmd
+  mkdir -p "$LOG_DIR"
+  printf '{"ts":"%s","target":"%s","kb":%s,"cmd":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-0}" "$3" >> "$LOG_DIR/log.jsonl"
+}
+
+# ---------- scan ----------
+
+cmd_scan() {
+  local id kb kind path note free
+  free="$(free_kb)"
+
+  if [ "$JSON" = 1 ]; then
+    printf '{"free_kb":%s,"targets":[' "$free"
+    local first=1
+    for id in $SAFE_IDS; do
+      safe_present "$id" || continue
+      kb="$(safe_size_kb "$id")"
+      [ "$kb" = "?" ] && kb=null
+      [ $first = 0 ] && printf ','
+      printf '{"id":"%s","tier":"SAFE","kb":%s,"path":"%s"}' "$id" "$kb" "$(safe_path "$id")"
+      first=0
+    done
+    while IFS=$(printf '\t') read -r kind kb path note; do
+      [ -n "$kind" ] || continue
+      [ $first = 0 ] && printf ','
+      printf '{"id":"%s","tier":"CHECK","kb":%s,"path":"%s"}' "$kind" "$kb" "$path"
+      first=0
+    done <<EOF
+$(check_items)
+EOF
+    printf ']}\n'
+    return 0
+  fi
+
+  echo "gigback scan — free space on /: $(human_kb "$free")"
+  echo ""
+  echo "SAFE (regenerates automatically — 'gigback clean --apply'):"
+  for id in $SAFE_IDS; do
+    safe_present "$id" || continue
+    printf '  %-10s %-14s %s\n' "$(human_kb "$(safe_size_kb "$id")")" "$id" "$(safe_desc "$id")"
+  done
+  echo ""
+  echo "CHECK (regenerable, needs judgment — 'gigback clean --check'):"
+  local any=0
+  while IFS=$(printf '\t') read -r kind kb path note; do
+    [ -n "$kind" ] || continue
+    any=1
+    printf '  %-10s %-14s %s  (%s)\n' "$(human_kb "$kb")" "$kind" "$path" "$note"
+  done <<EOF
+$(check_items)
+EOF
+  [ "$any" = 0 ] && echo "  (nothing found)"
+  echo ""
+  data_report
+}
+
+# ---------- clean ----------
+
+cmd_clean() {
+  [ "$YES" = 1 ] && [ "$CHECK" = 1 ] && \
+    die "--yes is refused with --check: CHECK items need individual judgment"
+
+  local id kb total=0 listed=0
+  echo "SAFE plan — each line names how it regenerates:"
+  for id in $SAFE_IDS; do
+    safe_present "$id" || continue
+    kb="$(safe_size_kb "$id")"
+    printf '  %-10s %-14s %s\n             regen: %s\n' \
+      "$(human_kb "$kb")" "$id" "$(safe_desc "$id")" "$(safe_regen "$id")"
+    [ "$kb" != "?" ] && total=$((total + kb))
+    listed=$((listed + 1))
+  done
+  [ "$listed" = 0 ] && { echo "  (nothing to clean)"; return 0; }
+  echo "  ----"
+  echo "  ~$(human_kb $total) measurable (simulator targets show up in the df delta)"
+  echo ""
+
+  if [ "$APPLY" = 0 ] && [ "$CHECK" = 0 ]; then
+    echo "DRY RUN — nothing deleted. Run 'gigback clean --apply' to execute."
+    return 0
+  fi
+
+  local before after
+  before="$(free_kb)"
+
+  if [ "$APPLY" = 1 ]; then
+    if [ "$YES" = 1 ] || confirm "Delete all SAFE targets above?"; then
+      for id in $SAFE_IDS; do
+        safe_present "$id" || continue
+        kb="$(safe_size_kb "$id")"
+        safe_apply "$id"
+        log_line "$id" "$([ "$kb" = "?" ] && echo 0 || echo "$kb")" "safe_apply $id"
+        echo "  deleted: $id"
+      done
+    else
+      echo "  SAFE tier skipped."
+    fi
+  fi
+
+  if [ "$CHECK" = 1 ]; then
+    echo ""
+    echo "CHECK items — confirm each:"
+    local kind path note tmp
+    tmp="$(mktemp)"
+    check_items > "$tmp"
+    # Items come in on fd 3 so confirm() can still read answers from stdin
+    while IFS=$(printf '\t') read -r kind kb path note <&3; do
+      [ -n "$kind" ] || continue
+      echo ""
+      printf '  %-10s %s\n  %s\n' "$(human_kb "$kb")" "$path" "$note"
+      if confirm "  Delete this?"; then
+        check_apply "$kind" "$path"
+        log_line "$kind" "$kb" "rm -rf $path"
+        echo "  deleted."
+      else
+        echo "  kept."
+      fi
+    done 3< "$tmp"
+    rm -f "$tmp"
+  fi
+
+  after="$(free_kb)"
+  echo ""
+  echo "Free space: $(human_kb "$before") -> $(human_kb "$after")" \
+       "(+$(human_kb $((after - before))))"
+  echo "Note: simulator runtime deletion is async — free space keeps rising for a few minutes."
+}
+
+# ---------- log ----------
+
+cmd_log() {
+  if [ -f "$LOG_DIR/log.jsonl" ]; then
+    cat "$LOG_DIR/log.jsonl"
+  else
+    echo "gigback: no runs logged yet ($LOG_DIR/log.jsonl)"
+  fi
+}
+
+# ---------- arg parsing ----------
+
+[ $# -ge 1 ] || { usage; exit 2; }
+CMD="$1"; shift
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply) APPLY=1 ;;
+    --check) CHECK=1 ;;
+    --yes) YES=1 ;;
+    --json) JSON=1 ;;
+    --projects-dir) shift; [ $# -gt 0 ] || die "--projects-dir needs a path"; PROJECTS_DIR="$1" ;;
+    --stale-days) shift; [ $# -gt 0 ] || die "--stale-days needs a number"
+      case "$1" in ''|*[!0-9]*) die "--stale-days must be a number" ;; esac
+      STALE_DAYS="$1" ;;
+    --keep-runtime) shift; [ $# -gt 0 ] || die "--keep-runtime needs a version"; KEEP_RUNTIMES="$KEEP_RUNTIMES $1" ;;
+    *) die "unknown flag '$1' (see gigback --help)" ;;
+  esac
+  shift
+done
+
+case "$CMD" in
+  scan) cmd_scan ;;
+  clean) cmd_clean ;;
+  report) data_report ;;
+  log) cmd_log ;;
+  --version|-v|version) echo "gigback $VERSION" ;;
+  --help|-h|help) usage ;;
+  *) die "unknown command '$CMD' (see gigback --help)" ;;
+esac

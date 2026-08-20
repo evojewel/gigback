@@ -1,0 +1,18 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck + bats
+        run: brew install shellcheck bats-core
+      - name: Lint
+        run: shellcheck bin/gigback lib/targets.sh
+      - name: Test
+        run: bats test
