@@ -26,6 +26,15 @@ brew trust evojewel/tap   # newer Homebrew requires trusting third-party taps
 brew install gigback
 ```
 
+**If brew complains about Xcode / Command Line Tools** (macOS betas with lagging CLT,
+or machines without CLT): gigback is plain bash and needs no compiler — install it
+without brew:
+
+```bash
+git clone https://github.com/evojewel/gigback ~/.gigback-src
+ln -s ~/.gigback-src/bin/gigback /opt/homebrew/bin/gigback
+```
+
 ## Usage
 
 ```bash
