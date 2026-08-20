@@ -1,0 +1,57 @@
+name: bottle
+
+# Builds a platform-independent ("all") bottle for a tagged release and
+# uploads it to that release's assets. gigback is pure bash, so one bottle
+# serves every macOS — and bottle installs skip brew's Xcode/CLT checks,
+# which is the point: machines without Command Line Tools install clean.
+#
+# Run manually per release (Actions -> bottle -> Run workflow), then paste
+# the printed bottle block into homebrew-tap/Formula/gigback.rb.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to bottle (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  bottle:
+    runs-on: macos-latest
+    steps:
+      - name: Build and bottle from the tap
+        run: |
+          brew tap evojewel/tap
+          brew install --build-bottle evojewel/tap/gigback
+          brew bottle evojewel/tap/gigback \
+            --root-url="https://github.com/evojewel/gigback/releases/download/${{ inputs.tag }}"
+
+      - name: Retag bottle as 'all' (contents are platform-independent)
+        id: retag
+        run: |
+          src=$(ls gigback--*.bottle.tar.gz)
+          ver=$(echo "$src" | sed -E 's/^gigback--([^.]+(\.[0-9]+)*)\..*/\1/')
+          dst="gigback-${ver}.all.bottle.tar.gz"
+          mv "$src" "$dst"
+          echo "sha=$(shasum -a 256 "$dst" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "file=$dst" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bottle to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" "${{ steps.retag.outputs.file }}" \
+            --repo evojewel/gigback --clobber
+
+      - name: Print the bottle block for the tap formula
+        run: |
+          echo 'Add to homebrew-tap/Formula/gigback.rb:'
+          echo ''
+          echo '  bottle do'
+          echo "    root_url \"https://github.com/evojewel/gigback/releases/download/${{ inputs.tag }}\""
+          echo "    sha256 cellar: :any_skip_relocation, all: \"${{ steps.retag.outputs.sha }}\""
+          echo '  end'
