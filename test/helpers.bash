@@ -16,6 +16,12 @@ setup_fixture() {
   mkdir -p "$FIXTURE/Projects/stale-app/node_modules/leftpad"
   echo "lib" > "$FIXTURE/Projects/stale-app/node_modules/leftpad/index.js"
 
+  mkdir -p "$FIXTURE/Projects/stale-rust-app/target/debug"
+  echo "binary" > "$FIXTURE/Projects/stale-rust-app/target/debug/app"
+
+  mkdir -p "$FIXTURE/Projects/stale-py-app/venv/lib"
+  echo "site-packages" > "$FIXTURE/Projects/stale-py-app/venv/lib/blob"
+
   mkdir -p "$FIXTURE/dot-cache/sometool"
   echo "tool cache" > "$FIXTURE/dot-cache/sometool/blob"
 

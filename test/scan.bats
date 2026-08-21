@@ -41,6 +41,15 @@ teardown() { teardown_fixture; }
   [[ "$output" == *"node_modules"* ]]
 }
 
+@test "scan surfaces stale Rust target/ and Python venv/ as CHECK" {
+  run "$GIGBACK" scan --stale-days 0
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rust-target"* ]]
+  [[ "$output" == *"cargo build"* ]]
+  [[ "$output" == *"venv"* ]]
+  [[ "$output" == *"python3 -m venv"* ]]
+}
+
 @test "report never deletes and mentions the data-tier stance" {
   before="$(fixture_file_count)"
   run "$GIGBACK" report

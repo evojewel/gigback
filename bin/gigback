@@ -46,7 +46,7 @@ USAGE
 
 FLAGS
   --projects-dir <path>   Where your repos live (default ~/Projects)
-  --stale-days <n>        node_modules staleness threshold (default 90)
+  --stale-days <n>        project artifact (node_modules/target/venv) staleness threshold (default 90)
   --keep-runtime <ver>    iOS runtime version to keep besides the newest (repeatable)
   --yes                   Skip the SAFE confirm. Refused together with --check.
   --json                  Machine-readable scan output

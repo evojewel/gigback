@@ -175,21 +175,45 @@ EOF
 # Items are enumerated dynamically; each is confirmed individually.
 # check_items prints: kind<TAB>kb<TAB>path-or-cmd<TAB>note
 
+# Stale project artifacts: subdirectory name -> CHECK kind -> regen command.
+# One line per project-local build artifact we know how to rebuild.
+PROJECT_ARTIFACT_SUBDIRS="node_modules target venv env"
+
+project_artifact_kind() {
+  case "$1" in
+    node_modules) echo "node_modules" ;;
+    target)       echo "rust-target" ;;
+    venv|env)     echo "venv" ;;
+  esac
+}
+
+project_artifact_regen() {
+  case "$1" in
+    node_modules) echo "npm install" ;;
+    target)       echo "cargo build" ;;
+    venv|env)     echo "python3 -m venv $1 && pip install -r requirements.txt" ;;
+  esac
+}
+
 check_items() {
-  # Stale node_modules: projects with no git commit in STALE_DAYS days
+  # Stale project build artifacts: node_modules, Rust target/, Python
+  # venv|env — for any project with no git commit in STALE_DAYS days.
   if [ -d "$PROJECTS_DIR" ]; then
-    local now d nm last age
+    local now d sub art last age kind
     now=$(date +%s)
     for d in "$PROJECTS_DIR"/*/; do
       [ -d "$d" ] || continue
-      nm="${d%/}/node_modules"
-      [ -d "$nm" ] || continue
       last=$( (cd "$d" && git log -1 --format=%ct 2>/dev/null) || true )
       [ -n "$last" ] || last=$(stat -f %m "$d" 2>/dev/null || echo "$now")
       age=$(( (now - last) / 86400 ))
       [ "$age" -ge "$STALE_DAYS" ] || continue
-      printf 'node_modules\t%s\t%s\tno commits in %sd; regen: npm install\n' \
-        "$(dir_kb "$nm")" "$nm" "$age"
+      for sub in $PROJECT_ARTIFACT_SUBDIRS; do
+        art="${d%/}/$sub"
+        [ -d "$art" ] || continue
+        kind="$(project_artifact_kind "$sub")"
+        printf '%s\t%s\t%s\tno commits in %sd; regen: %s\n' \
+          "$kind" "$(dir_kb "$art")" "$art" "$age" "$(project_artifact_regen "$sub")"
+      done
     done
   fi
 
@@ -215,7 +239,7 @@ check_items() {
 
 check_apply() { # $1: kind, $2: path — the only delete verbs in CHECK tier
   case "$1" in
-    node_modules|xcode-archives|dot-cache) rm -rf "${2:?}" ;;
+    node_modules|rust-target|venv|xcode-archives|dot-cache) rm -rf "${2:?}" ;;
     *) echo "gigback: unknown CHECK kind '$1' — refusing" >&2; return 1 ;;
   esac
 }
