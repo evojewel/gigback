@@ -57,8 +57,9 @@ Every path gigback can touch lives in one reviewed table
 | Tier | What | Behavior |
 |---|---|---|
 | **SAFE** | Xcode DerivedData, app caches, npm/Gradle caches, orphaned simulator devices, superseded simulator runtimes | Deletable via `clean --apply`. Regenerates automatically. |
-| **CHECK** | `node_modules` in repos with no commits for 90+ days, Xcode archives, `~/.cache` entries | Regenerable, but context-dependent — each item is confirmed individually. Model caches are flagged (slow to re-download). |
+| **CHECK** | `node_modules` in repos — and in their linked git worktrees, wherever they live (e.g. `.claude/worktrees/*`) — with no commits for 90+ days on that checkout's own HEAD, Xcode archives, `~/.cache` entries | Regenerable, but context-dependent — each item is confirmed individually. Worktree items show their branch and whether they have uncommitted changes. Symlinked `node_modules` are skipped (they free nothing). Model caches are flagged (slow to re-download). |
 | **DATA** | Local Postgres/MySQL data dirs, editor state (VS Code / Cursor `globalStorage` holds your AI chat history), Application Support | **Report only. There is no code path in gigback that deletes these.** |
+| **MANUAL** | Regenerable things gigback can't remove without sudo: older bundle-style simulator runtimes | Sized and listed with how to remove them by hand (Xcode → Settings → Components). No delete code. |
 
 Plus:
 
@@ -83,6 +84,15 @@ rising for a few minutes after), and `du` double-counts runtimes because their i
 mounted as volumes — which is why gigback measures success by the `df` delta, not by
 summing what it deleted.
 
+Runtimes come in two kinds. Disk-image runtimes show up in `xcrun simctl runtime list`
+and gigback deletes old ones with `simctl runtime delete`. Older bundle-style runtimes
+(e.g. an iOS 18 runtime mounted from a `SimRuntimeBundle`) show up only in
+`xcrun simctl list runtimes`; `simctl runtime delete` matches only what `runtime list`
+shows, so there is no sudo-free way for gigback to remove them. gigback lists them under
+**MANUAL** with their real on-disk size (the backing image file, not the ~2× mounted
+volume) and the newest/`--keep-runtime` rule applied across both kinds. Remove them in
+Xcode → Settings → Components.
+
 > Not to be confused with **DevCleaner**, a GUI app focused on Xcode caches. gigback is a
 > CLI, covers more than Xcode, and is built around the tier model above.
 
@@ -97,6 +107,8 @@ bats test                   # brew install bats-core
 
 Tests run entirely against fixture trees — `GB_*` environment variables point every path
 at a temp dir, and `GB_NO_SIMCTL` / `GB_NO_NPM` keep the real system out of reach.
+Simulator tests use fake `xcrun` / `hdiutil` scripts (`GB_XCRUN`, `GB_HDIUTIL`, see
+`use_fake_simctl` in `test/helpers.bash`) that answer from fixture text and log every call.
 
 ## License
 
