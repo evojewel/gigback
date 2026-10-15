@@ -60,7 +60,7 @@ Every path gigback can touch lives in one reviewed table
 | **SAFE** | Xcode DerivedData, app caches, npm/Gradle caches, orphaned simulator devices, superseded simulator runtimes | Deletable via `clean --apply`. Regenerates automatically. |
 | **CHECK** | Project build artifacts — `node_modules`, Rust `target/` (next to a `Cargo.toml`), Python `venv`/`env` (holding a `pyvenv.cfg`) — in repos and in their linked git worktrees, wherever they live (e.g. `.claude/worktrees/*`) — with no commits on that checkout's own HEAD for 90+ days (repos, `--stale-days`) or 30+ days (worktrees, `--worktree-stale-days`), Xcode archives, `~/.cache` entries | Regenerable, but context-dependent — each item is confirmed individually. Worktree items show their branch and whether they have uncommitted changes. Symlinked artifacts are skipped (they free nothing). Model caches are flagged (slow to re-download). |
 | **DATA** | Local Postgres/MySQL data dirs, editor state (VS Code / Cursor `globalStorage` holds your AI chat history), Application Support | **Report only. There is no code path in gigback that deletes these.** |
-| **MANUAL** | Regenerable things gigback can't remove without sudo: older bundle-style simulator runtimes | Sized and listed with how to remove them by hand (Xcode → Settings → Components). No delete code. |
+| **MANUAL** | Things gigback can't remove without sudo: older bundle-style simulator runtimes, and runtime images left on disk that no simulator uses | Sized and listed with how to handle them by hand (shown by `scan`, `clean` and `report`). No delete code. |
 
 Plus:
 
@@ -94,6 +94,14 @@ shows, so there is no sudo-free way for gigback to remove them. gigback lists th
 volume) and the newest/`--keep-runtime` rule applied across both kinds. Remove them in
 Xcode → Settings → Components.
 
+A runtime delete is checked, not assumed. `simctl runtime delete` can exit 0 and still leave
+the image file in `/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime`,
+which macOS protects (SIP), so after each delete gigback waits up to a minute for it to
+settle and reports one of: *removed, X GB freed* · *unregistered, but the X GB image was
+left at <path>* · *still registered* · *simctl failed: <message>*. Each outcome goes to
+`~/.gigback/log.jsonl`. Images left behind like this, known to neither `simctl` list, then
+appear on the **MANUAL** list with their size; gigback has no way to remove them.
+
 > Not to be confused with **DevCleaner**, a GUI app focused on Xcode caches. gigback is a
 > CLI, covers more than Xcode, and is built around the tier model above.
 
@@ -109,7 +117,8 @@ bats test                   # brew install bats-core
 Tests run entirely against fixture trees — `GB_*` environment variables point every path
 at a temp dir, and `GB_NO_SIMCTL` / `GB_NO_NPM` keep the real system out of reach.
 Simulator tests use fake `xcrun` / `hdiutil` scripts (`GB_XCRUN`, `GB_HDIUTIL`, see
-`use_fake_simctl` in `test/helpers.bash`) that answer from fixture text and log every call.
+`use_fake_simctl` in `test/helpers.bash`) that answer from fixture state and log every call;
+`$SIM_DIR/delete-mode` picks how a fake `runtime delete` behaves (removed / left / stuck / fail).
 
 ## License
 

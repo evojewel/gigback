@@ -60,7 +60,8 @@ TIERS
   SAFE   caches & build artifacts that regenerate automatically
   CHECK  regenerable but context-dependent — confirmed item by item
   DATA   databases & editor state — gigback reports sizes, never deletes
-  MANUAL regenerable, but no sudo-free way to remove — sized, with how to do it by hand
+  MANUAL gigback can't remove these (no sudo-free way, or protected by macOS) — sized,
+         with what you can do by hand
 
 The one rule: gigback only deletes what it can name the regeneration
 command for. Everything else is yours to review.
@@ -148,7 +149,7 @@ manual_section() { # MANUAL list, or nothing when it's empty
   items="$(manual_items)"
   [ -n "$items" ] || return 0
   echo ""
-  echo "MANUAL (regenerable, but gigback can't remove these without sudo — do it by hand):"
+  echo "MANUAL (gigback can't remove these — sizes, and what you can do by hand):"
   while IFS=$(printf '\t') read -r kind kb what how; do
     printf '  %-10s %-14s %s\n             %s\n' "$(human_kb "$kb")" "$kind" "$what" "$how"
   done <<EOF
@@ -193,7 +194,8 @@ cmd_clean() {
         kb="$(safe_size_kb "$id")"
         safe_apply "$id"
         log_line "$id" "$([ "$kb" = "?" ] && echo 0 || echo "$kb")" "safe_apply $id"
-        echo "  deleted: $id"
+        # sim-runtimes prints a checked result per runtime instead
+        [ "$id" = sim-runtimes ] || echo "  deleted: $id"
       done
     else
       echo "  SAFE tier skipped."
@@ -266,7 +268,7 @@ done
 case "$CMD" in
   scan) cmd_scan ;;
   clean) cmd_clean ;;
-  report) data_report ;;
+  report) data_report; manual_section ;;
   log) cmd_log ;;
   --version|-v|version) echo "gigback $VERSION" ;;
   --help|-h|help) usage ;;

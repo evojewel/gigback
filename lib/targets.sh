@@ -32,6 +32,12 @@ LOG_DIR="${GB_LOG_DIR:-$GB_HOME/.gigback}"
 XCRUN="${GB_XCRUN:-xcrun}"
 HDIUTIL="${GB_HDIUTIL:-hdiutil}"
 
+# Where macOS keeps downloaded iOS simulator runtime images (MobileAssets).
+SIM_ASSETS="${GB_SIM_ASSETS:-/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime}"
+# Runtime deletion is asynchronous: seconds to wait for it to settle before
+# reporting what is left.
+RUNTIME_WAIT="${GB_RUNTIME_WAIT:-60}"
+
 # ---------- helpers ----------
 
 dir_kb() { # $1: path -> size in KB (0 if absent)
@@ -205,14 +211,88 @@ EOF
 delete_old_runtimes() { # images only — bundle runtimes never reach a delete command
   local newest v uuid
   newest="$(newest_runtime_version)"
+  echo "  sim-runtimes:"
   while read -r v uuid; do
     [ -n "$v" ] || continue
     [ "$v" = "$newest" ] && continue
     is_kept_runtime "$v" && continue
-    "$XCRUN" simctl runtime delete "$uuid" >/dev/null 2>&1 || true
+    delete_runtime "$v" "$uuid" </dev/null
   done <<EOF
 $(ready_runtimes)
 EOF
+}
+
+image_path_of() { # $1: uuid -> the image file `simctl runtime list -v` reports for it
+  "$XCRUN" simctl runtime list -v 2>/dev/null | awk -v u="$1" '
+    /^[^ ]/ { cur = (index($0, "- " u) > 0) }
+    cur && /^ +Image Path: / { sub(/^ +Image Path: /, ""); print; exit }'
+}
+
+is_registered_image() { # $1: uuid -> 0 while `simctl runtime list` still shows it
+  # Capture first: with pipefail, `| grep -q` can fail on SIGPIPE when grep
+  # exits at the first match, which would read as "not registered".
+  case "$("$XCRUN" simctl runtime list 2>/dev/null)" in *"$1"*) return 0 ;; esac
+  return 1
+}
+
+delete_runtime() { # $1: version, $2: uuid -> one honest result line, logged
+  # `simctl runtime delete` can exit 0 yet leave the image on disk (macOS
+  # protects the MobileAsset folder), so success is judged by what is left:
+  # is the runtime still registered, and does its image file still exist?
+  local v="$1" uuid="$2" img kb=0 out rc waited=0 registered left result freed=0
+  img="$(image_path_of "$uuid")"
+  [ -n "$img" ] && [ -f "$img" ] && kb="$(dir_kb "$img")"
+  out="$("$XCRUN" simctl runtime delete "$uuid" 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    result="simctl failed: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"
+  else
+    while :; do
+      registered=0; is_registered_image "$uuid" && registered=1
+      left=0; [ -n "$img" ] && [ -e "$img" ] && left=1
+      [ "$registered" = 0 ] && [ "$left" = 0 ] && break
+      [ "$waited" -ge "$RUNTIME_WAIT" ] && break
+      sleep 2
+      waited=$((waited + 2))
+    done
+    if [ "$registered" = 1 ]; then
+      result="still registered ${waited}s after simctl returned; check again with 'gigback scan'"
+    elif [ "$left" = 1 ]; then
+      result="unregistered, but the $(human_kb "$kb") image was left at $img (protected by macOS; gigback can't remove it)"
+    elif [ -z "$img" ]; then
+      result="removed (image location unknown, size not measured)"
+    else
+      result="removed, $(human_kb "$kb") freed"
+      freed="$kb"
+    fi
+  fi
+  echo "    iOS $v: $result"
+  # log_line lives in bin/gigback; keep the message JSON-safe (drop " and \)
+  log_line sim-runtime "$freed" \
+    "$(printf 'simctl runtime delete %s (iOS %s): %s' "$uuid" "$v" "$result" | tr -d '\042\134' | tr '\t' ' ')"
+}
+
+registered_builds() { # builds either simctl list knows, space-separated
+  have_simctl || return 0
+  image_runtime_builds
+  "$XCRUN" simctl list runtimes -v 2>/dev/null \
+    | awk '/^iOS / {b = $5; sub(/\)$/, "", b); printf "%s ", b}'
+}
+
+orphan_runtime_assets() { # runtime images on disk neither list knows: kb<TAB>version<TAB>build<TAB>dir
+  local known a b v
+  have_simctl && [ -d "$SIM_ASSETS" ] || return 0
+  known="$(registered_builds)"
+  # if simctl listed nothing we can't tell an orphan from an image in use
+  [ -n "$(printf '%s' "$known" | tr -d ' ')" ] || return 0
+  for a in "$SIM_ASSETS"/*.asset; do
+    [ -f "$a/Info.plist" ] || continue
+    [ -n "$(find "$a" -type f -name '*.dmg' 2>/dev/null | head -1)" ] || continue
+    b="$(plutil -extract MobileAssetProperties.Build raw "$a/Info.plist" 2>/dev/null)" || continue
+    case " $known " in *" $b "*) continue ;; esac
+    v="$(plutil -extract MobileAssetProperties.SimulatorVersion raw "$a/Info.plist" 2>/dev/null || echo "?")"
+    printf '%s\t%s\t%s\t%s\n' "$(du -skx "$a" 2>/dev/null | cut -f1)" "$v" "$b" "$a"
+  done
 }
 
 old_bundle_runtimes() { # bundle runtimes outside the keep rule: version<TAB>build<TAB>bundle path
@@ -407,6 +487,11 @@ manual_items() {
     [ -n "$v" ] || continue
     printf 'sim-runtime\t%s\tiOS %s (%s)\t%s\n' "$(runtime_kb "$path")" "$v" "$b" \
       "remove in Xcode → Settings → Components; Xcode re-downloads runtimes on demand"
+  done
+  orphan_runtime_assets | while IFS=$(printf '\t') read -r kb v b path; do
+    [ -n "$b" ] || continue
+    printf 'runtime-image\t%s\tiOS %s (%s) image left at %s\t%s\n' "$kb" "$v" "$b" "$path" \
+      "no simulator uses it; macOS protects this folder (SIP), so gigback can't remove it"
   done
 }
 
