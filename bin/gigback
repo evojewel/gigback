@@ -55,6 +55,7 @@ TIERS
   SAFE   caches & build artifacts that regenerate automatically
   CHECK  regenerable but context-dependent — confirmed item by item
   DATA   databases & editor state — gigback reports sizes, never deletes
+  MANUAL regenerable, but no sudo-free way to remove — sized, with how to do it by hand
 
 The one rule: gigback only deletes what it can name the regeneration
 command for. Everything else is yours to review.
@@ -101,6 +102,15 @@ cmd_scan() {
     done <<EOF
 $(check_items)
 EOF
+    while IFS=$(printf '\t') read -r kind kb path note; do
+      [ -n "$kind" ] || continue
+      [ "$kb" = "?" ] && kb=null
+      [ $first = 0 ] && printf ','
+      printf '{"id":"%s","tier":"MANUAL","kb":%s,"path":"%s"}' "$kind" "$kb" "$path"
+      first=0
+    done <<EOF
+$(manual_items)
+EOF
     printf ']}\n'
     return 0
   fi
@@ -123,8 +133,22 @@ EOF
 $(check_items)
 EOF
   [ "$any" = 0 ] && echo "  (nothing found)"
+  manual_section
   echo ""
   data_report
+}
+
+manual_section() { # MANUAL list, or nothing when it's empty
+  local items kind kb what how
+  items="$(manual_items)"
+  [ -n "$items" ] || return 0
+  echo ""
+  echo "MANUAL (regenerable, but gigback can't remove these without sudo — do it by hand):"
+  while IFS=$(printf '\t') read -r kind kb what how; do
+    printf '  %-10s %-14s %s\n             %s\n' "$(human_kb "$kb")" "$kind" "$what" "$how"
+  done <<EOF
+$items
+EOF
 }
 
 # ---------- clean ----------
@@ -143,9 +167,10 @@ cmd_clean() {
     [ "$kb" != "?" ] && total=$((total + kb))
     listed=$((listed + 1))
   done
-  [ "$listed" = 0 ] && { echo "  (nothing to clean)"; return 0; }
+  [ "$listed" = 0 ] && { echo "  (nothing to clean)"; manual_section; return 0; }
   echo "  ----"
   echo "  ~$(human_kb $total) measurable (simulator targets show up in the df delta)"
+  manual_section
   echo ""
 
   if [ "$APPLY" = 0 ] && [ "$CHECK" = 0 ]; then

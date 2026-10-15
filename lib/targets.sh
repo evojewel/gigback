@@ -27,6 +27,11 @@ APP_SUPPORT="${GB_APP_SUPPORT:-$GB_HOME/Library/Application Support}"
 BREW_VAR="${GB_BREW_VAR:-/opt/homebrew/var}"
 LOG_DIR="${GB_LOG_DIR:-$GB_HOME/.gigback}"
 
+# Tools gigback asks about simulator state. Overridable so tests answer from
+# fixtures and never reach the real xcrun or hdiutil.
+XCRUN="${GB_XCRUN:-xcrun}"
+HDIUTIL="${GB_HDIUTIL:-hdiutil}"
+
 # ---------- helpers ----------
 
 dir_kb() { # $1: path -> size in KB (0 if absent)
@@ -45,7 +50,7 @@ human_kb() { # $1: KB -> human string
 free_kb() { df -k / | awk 'NR==2 {print $4}'; }
 
 have_simctl() {
-  [ -z "${GB_NO_SIMCTL:-}" ] && command -v xcrun >/dev/null 2>&1
+  [ -z "${GB_NO_SIMCTL:-}" ] && command -v "$XCRUN" >/dev/null 2>&1
 }
 
 have_npm() {
@@ -119,31 +124,70 @@ safe_apply() {
     user-caches)  rm -rf "${USER_CACHES:?}"/* 2>/dev/null || true ;;
     npm-cache)    npm cache clean --force >/dev/null 2>&1 || true ;;
     gradle-cache) rm -rf "${GRADLE_CACHES:?}" ;;
-    sim-devices)  xcrun simctl delete unavailable >/dev/null 2>&1 || true ;;
+    sim-devices)  "$XCRUN" simctl delete unavailable >/dev/null 2>&1 || true ;;
     sim-runtimes) delete_old_runtimes ;;
   esac
 }
 
 # ---------- simulator runtime logic ----------
-# `xcrun simctl runtime list` lines look like:
-#   iOS 26.5 (23F77) - 631FC479-2466-4354-9CD5-C833E4F86FCE (Ready)
-# We keep the newest Ready iOS runtime plus anything in --keep-runtime,
-# and delete the rest. Deletion is async; we report versions, not bytes.
+# iOS runtimes come in two kinds, and simctl lists them in two places:
+#
+#   Disk images: `simctl runtime list` lines look like
+#     iOS 26.5 (23F77) - 631FC479-2466-4354-9CD5-C833E4F86FCE (Ready)
+#   and `simctl runtime delete <uuid>` removes them without sudo.
+#
+#   Bundles (older downloads, e.g. a Cryptex SimRuntimeBundle): only
+#   `simctl list runtimes` shows them. `simctl runtime delete` matches only
+#   what `simctl runtime list` lists, so gigback has no sudo-free way to
+#   remove them; they go on the MANUAL list with the by-hand route instead.
+#
+# Across both kinds we keep the newest iOS version plus anything in
+# --keep-runtime. Image deletion is async; we report versions, not bytes.
 
-ready_runtimes() { # prints "version uuid" lines, oldest first
+sort_versions() { sort -t. -k1,1n -k2,2n -k3,3n; } # lines starting x.y[.z]
+
+ready_runtimes() { # prints "version uuid" lines for deletable images, oldest first
   have_simctl || return 0
-  xcrun simctl runtime list 2>/dev/null \
+  "$XCRUN" simctl runtime list 2>/dev/null \
     | awk '/^iOS / && /\(Ready\)$/ {print $2, $5}' \
-    | sort -t. -k1,1n -k2,2n
+    | sort_versions
 }
 
-newest_runtime_version() { ready_runtimes | awk 'END {print $1}'; }
+image_runtime_builds() { # builds of every iOS disk image in any state, space-separated
+  have_simctl || return 0
+  "$XCRUN" simctl runtime list 2>/dev/null \
+    | awk '/^iOS / {b = $3; gsub(/[()]/, "", b); printf "%s ", b}'
+}
+
+listed_runtimes() { # every available iOS runtime: version<TAB>build<TAB>bundle path
+  # `simctl list runtimes -v` lines look like
+  #   iOS 18.1 (18.1 - 22B81) - com.apple.CoreSimulator.SimRuntime.iOS-18-1 [/…/iOS 18.1.simruntime]
+  have_simctl || return 0
+  "$XCRUN" simctl list runtimes -v 2>/dev/null \
+    | awk '/^iOS / && !/unavailable/ && match($0, /\[.*\]$/) {
+        b = $5; sub(/\)$/, "", b)
+        printf "%s\t%s\t%s\n", $2, b, substr($0, RSTART + 1, RLENGTH - 2)
+      }'
+}
+
+bundle_runtimes() { # listed runtimes that are not disk images: version<TAB>build<TAB>bundle path
+  local images v b path
+  images=" $(image_runtime_builds) "
+  listed_runtimes | while IFS=$(printf '\t') read -r v b path; do
+    case "$images" in *" $b "*) continue ;; esac
+    printf '%s\t%s\t%s\n' "$v" "$b" "$path"
+  done
+}
+
+newest_runtime_version() { # newest iOS version of either kind
+  { ready_runtimes; listed_runtimes; } | awk '{print $1}' | sort_versions | awk 'END {print}'
+}
 
 is_kept_runtime() { # $1: version -> 0 if user asked to keep it
   case " ${KEEP_RUNTIMES:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
-old_runtime_versions() { # versions that would be deleted, space-separated
+old_runtime_versions() { # deletable image versions, space-separated
   local newest out v uuid
   newest="$(newest_runtime_version)"
   out=""
@@ -158,17 +202,57 @@ EOF
   echo "${out# }"
 }
 
-delete_old_runtimes() {
+delete_old_runtimes() { # images only — bundle runtimes never reach a delete command
   local newest v uuid
   newest="$(newest_runtime_version)"
   while read -r v uuid; do
     [ -n "$v" ] || continue
     [ "$v" = "$newest" ] && continue
     is_kept_runtime "$v" && continue
-    xcrun simctl runtime delete "$uuid" >/dev/null 2>&1 || true
+    "$XCRUN" simctl runtime delete "$uuid" >/dev/null 2>&1 || true
   done <<EOF
 $(ready_runtimes)
 EOF
+}
+
+old_bundle_runtimes() { # bundle runtimes outside the keep rule: version<TAB>build<TAB>bundle path
+  local newest v b path
+  newest="$(newest_runtime_version)"
+  bundle_runtimes | while IFS=$(printf '\t') read -r v b path; do
+    [ "$v" = "$newest" ] && continue
+    is_kept_runtime "$v" && continue
+    printf '%s\t%s\t%s\n' "$v" "$b" "$path"
+  done
+}
+
+mounted_images() { # hdiutil info -> mount point<TAB>image file, one line per mounted volume
+  "$HDIUTIL" info 2>/dev/null | awk -F'\t' '
+    /^image-path/ { img = $0; sub(/^image-path[ \t]*:[ \t]*/, "", img); next }
+    /^\/dev\// && $3 != "" { print $3 "\t" img }'
+}
+
+containing_image() { # $1: path; stdin: mounted_images -> image whose volume holds $1
+  awk -F'\t' -v p="$1" '
+    index(p "/", $1 "/") == 1 && length($1) > best { best = length($1); img = $2 }
+    END { if (best) print img }'
+}
+
+runtime_kb() { # $1: runtime bundle path -> KB it holds on disk, or "?"
+  # A runtime volume is a mounted image, and du on it counts the expanded
+  # contents (about twice the file). Size the image file instead, walking
+  # outward while that file sits inside another mounted image (a runtime
+  # bundle inside a MobileAsset image): the outermost file holds the space.
+  local mounts img outer hops=0
+  mounts="$(mounted_images)"
+  img="$(printf '%s\n' "$mounts" | containing_image "$1")"
+  if [ -z "$img" ]; then dir_kb "$1"; return 0; fi # not on a mounted image: du is honest
+  while [ "$hops" -lt 4 ]; do
+    outer="$(printf '%s\n' "$mounts" | containing_image "$img")"
+    [ -n "$outer" ] || break
+    img="$outer"
+    hops=$((hops + 1))
+  done
+  if [ -f "$img" ]; then dir_kb "$img"; else echo "?"; fi
 }
 
 # ---------- CHECK tier ----------
@@ -218,6 +302,21 @@ check_apply() { # $1: kind, $2: path — the only delete verbs in CHECK tier
     node_modules|xcode-archives|dot-cache) rm -rf "${2:?}" ;;
     *) echo "gigback: unknown CHECK kind '$1' — refusing" >&2; return 1 ;;
   esac
+}
+
+# ---------- MANUAL list ----------
+# Regenerable, but gigback has no sudo-free way to remove these, so it sizes
+# them and says how to remove them by hand. Like the DATA tier, there is no
+# delete code for these.
+# manual_items prints: kind<TAB>kb<TAB>what<TAB>how to remove
+
+manual_items() {
+  local v b path
+  old_bundle_runtimes | while IFS=$(printf '\t') read -r v b path; do
+    [ -n "$v" ] || continue
+    printf 'sim-runtime\t%s\tiOS %s (%s)\t%s\n' "$(runtime_kb "$path")" "$v" "$b" \
+      "remove in Xcode → Settings → Components; Xcode re-downloads runtimes on demand"
+  done
 }
 
 # ---------- DATA tier ----------
