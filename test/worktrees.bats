@@ -130,3 +130,55 @@ teardown() { teardown_fixture; }
   [ "$status" -eq 0 ]
   [ ! -s "$FIXTURE/guard.log" ]
 }
+
+# Rust target/ and Python venv/ in a stale worktree. Cargo.toml is committed
+# (with the old date); target/ and venv/ are left untracked and NOT
+# gitignored, so they must not make the worktree read as dirty.
+add_rust_and_venv() { # $1: worktree dir, $2: epoch for the Cargo.toml commit
+  echo '[package]' > "$1/Cargo.toml"
+  commit_at "$1" "$2" "add Cargo.toml"
+  mkdir -p "$1/target/debug" "$1/venv/lib"
+  echo "binary" > "$1/target/debug/app"
+  echo "home = /usr/bin" > "$1/venv/pyvenv.cfg"
+}
+
+@test "Rust target/ and Python venv/ in a stale worktree get the worktree treatment" {
+  add_rust_and_venv "$WT/old" "$(( $(date +%s) - 200 * 86400 ))"
+  run "$GIGBACK" scan
+  [ "$status" -eq 0 ]
+  output_has "rust-target"
+  output_has "worktrees/old/target  (no commits in 200d (worktree threshold 30d); worktree on feat/old, clean; regen: cargo build)"
+  output_has "worktrees/old/venv  (no commits in 200d (worktree threshold 30d); worktree on feat/old, clean; regen: python3 -m venv venv"
+}
+
+@test "Rust/Python artifacts in a worktree follow --worktree-stale-days, not --stale-days" {
+  add_rust_and_venv "$WT/mid" "$(( $(date +%s) - 45 * 86400 ))"
+  run "$GIGBACK" scan --stale-days 300
+  [ "$status" -eq 0 ]
+  output_has "worktrees/mid/target"
+  output_has "worktrees/mid/venv"
+  run "$GIGBACK" scan --worktree-stale-days 60
+  [ "$status" -eq 0 ]
+  output_lacks "worktrees/mid/target"
+  output_lacks "worktrees/mid/venv"
+}
+
+@test "a symlinked venv in a worktree is not offered" {
+  mkdir -p "$FIXTURE/shared-venv"
+  echo "home = /usr/bin" > "$FIXTURE/shared-venv/pyvenv.cfg"
+  ln -s "$FIXTURE/shared-venv" "$WT/linked/venv"
+  run "$GIGBACK" scan
+  [ "$status" -eq 0 ]
+  output_lacks "worktrees/linked/venv"
+}
+
+@test "confirming worktree Rust/Python items deletes only those dirs" {
+  add_rust_and_venv "$WT/old" "$(( $(date +%s) - 200 * 86400 ))"
+  run bash -c "yes y | '$GIGBACK' clean --check"
+  [ "$status" -eq 0 ]
+  [ ! -e "$WT/old/target" ]
+  [ ! -e "$WT/old/venv" ]
+  [ -f "$WT/old/Cargo.toml" ]
+  [ -f "$WT/old/.git" ]
+  [ ! -s "$FIXTURE/guard.log" ]
+}

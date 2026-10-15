@@ -18,6 +18,8 @@ teardown() { teardown_fixture; }
 
   # CHECK tier untouched without --check
   [ -d "$GB_PROJECTS_DIR/stale-app/node_modules" ]
+  [ -d "$GB_PROJECTS_DIR/stale-rust-app/target" ]
+  [ -d "$GB_PROJECTS_DIR/stale-py-app/venv" ]
   [ -d "$GB_DOT_CACHE/sometool" ]
 
   # DATA tier untouched, always
@@ -43,6 +45,8 @@ teardown() { teardown_fixture; }
   run bash -c "yes n | '$GIGBACK' clean --check --stale-days 0"
   [ "$status" -eq 0 ]
   [ -d "$GB_PROJECTS_DIR/stale-app/node_modules" ]
+  [ -d "$GB_PROJECTS_DIR/stale-rust-app/target" ]
+  [ -d "$GB_PROJECTS_DIR/stale-py-app/venv" ]
   [ -d "$GB_DOT_CACHE/sometool" ]
 }
 
@@ -50,6 +54,12 @@ teardown() { teardown_fixture; }
   run bash -c "yes y | '$GIGBACK' clean --check --stale-days 0"
   [ "$status" -eq 0 ]
   [ ! -d "$GB_PROJECTS_DIR/stale-app/node_modules" ]
+  [ ! -d "$GB_PROJECTS_DIR/stale-rust-app/target" ]
+  [ ! -d "$GB_PROJECTS_DIR/stale-py-app/venv" ]
+  # name lookalikes that aren't build artifacts survive a yes to everything
+  [ -f "$GB_PROJECTS_DIR/config-app/env/staging.env" ]
+  [ -f "$GB_PROJECTS_DIR/maven-app/target/classes/App.class" ]
+  [ ! -s "$FIXTURE/guard.log" ]
   # DATA still untouched even when saying yes to everything
   [ -f "$GB_APP_SUPPORT/Cursor/User/globalStorage/state.vscdb" ]
   [ -f "$GB_BREW_VAR/postgresql@14/base/pg" ]

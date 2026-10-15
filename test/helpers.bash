@@ -16,6 +16,20 @@ setup_fixture() {
   mkdir -p "$FIXTURE/Projects/stale-app/node_modules/leftpad"
   echo "lib" > "$FIXTURE/Projects/stale-app/node_modules/leftpad/index.js"
 
+  mkdir -p "$FIXTURE/Projects/stale-rust-app/target/debug"
+  echo '[package]' > "$FIXTURE/Projects/stale-rust-app/Cargo.toml"
+  echo "binary" > "$FIXTURE/Projects/stale-rust-app/target/debug/app"
+
+  mkdir -p "$FIXTURE/Projects/stale-py-app/venv/lib"
+  echo "home = /usr/bin" > "$FIXTURE/Projects/stale-py-app/venv/pyvenv.cfg"
+  echo "site-packages" > "$FIXTURE/Projects/stale-py-app/venv/lib/blob"
+
+  # Lookalikes that share an artifact's name but are real work: never offered.
+  mkdir -p "$FIXTURE/Projects/config-app/env" "$FIXTURE/Projects/maven-app/target/classes"
+  echo "API_URL=https://example.invalid" > "$FIXTURE/Projects/config-app/env/staging.env"
+  echo "<project/>" > "$FIXTURE/Projects/maven-app/pom.xml"
+  echo "class" > "$FIXTURE/Projects/maven-app/target/classes/App.class"
+
   mkdir -p "$FIXTURE/dot-cache/sometool"
   echo "tool cache" > "$FIXTURE/dot-cache/sometool/blob"
 
