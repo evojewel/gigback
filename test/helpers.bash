@@ -148,19 +148,22 @@ SH
 #   app                       main checkout, fresh commit, node_modules
 #   app/.claude/worktrees/old stale (200d), clean, branch feat/old, node_modules
 #   app/.claude/worktrees/new fresh, branch feat/new, node_modules
+#   app/.claude/worktrees/mid 45d: stale for worktrees (30d), not for repos (90d)
 #   app/.claude/worktrees/linked  stale, node_modules is a symlink to app's
 #   app/.claude/worktrees/detached stale, detached HEAD, node_modules
 #   $FIXTURE/elsewhere/dirty  stale, uncommitted change, outside Projects
 #   Projects/app-feature      stale worktree that is also a top-level dir
+#   Projects/repo45           top-level repo, 45d, node_modules (fresh at 90d)
 setup_worktree_fixture() {
   export GIT_CONFIG_NOSYSTEM=1
   export GIT_CONFIG_GLOBAL="$FIXTURE/gitconfig"
   printf '[user]\n\tname = gigback test\n\temail = test@example.invalid\n[commit]\n\tgpgsign = false\n' \
     > "$GIT_CONFIG_GLOBAL"
 
-  local now old app wt
+  local now old mid app
   now=$(date +%s)
   old=$((now - 200 * 86400))
+  mid=$((now - 45 * 86400))
   app="$GB_PROJECTS_DIR/app"
   WT="$app/.claude/worktrees"
 
@@ -177,6 +180,15 @@ setup_worktree_fixture() {
   git -C "$app" worktree add -q -b feat/new "$WT/new"
   commit_at "$WT/new" "$now" "new work"
   add_node_modules "$WT/new"
+
+  git -C "$app" worktree add -q -b feat/mid "$WT/mid"
+  commit_at "$WT/mid" "$mid" "mid work"
+  add_node_modules "$WT/mid"
+
+  git init -q -b main "$GB_PROJECTS_DIR/repo45"
+  printf 'node_modules/\n' > "$GB_PROJECTS_DIR/repo45/.gitignore"
+  commit_at "$GB_PROJECTS_DIR/repo45" "$mid" "repo45 work"
+  add_node_modules "$GB_PROJECTS_DIR/repo45"
 
   git -C "$app" worktree add -q -b feat/linked "$WT/linked"
   commit_at "$WT/linked" "$old" "linked work"

@@ -295,9 +295,11 @@ worktree_summary() { # $1: dir -> "worktree on <branch>, clean|uncommitted chang
 
 check_items() {
   # Stale node_modules: checkouts with no commit on their own HEAD in
-  # STALE_DAYS days. A worktree is judged by its HEAD, not its main repo's.
+  # STALE_DAYS days (repos) or WORKTREE_STALE_DAYS days (linked worktrees,
+  # which are usually short-lived). A worktree is judged by its own HEAD,
+  # not its main repo's.
   if [ -d "$PROJECTS_DIR" ]; then
-    local now d nm last age note
+    local now d nm last age note limit worktree
     now=$(date +%s)
     node_modules_checkouts | while IFS= read -r d; do
       nm="$d/node_modules"
@@ -307,9 +309,17 @@ check_items() {
       last=$( (cd "$d" && git log -1 --format=%ct 2>/dev/null) || true )
       [ -n "$last" ] || last=$(stat -f %m "$d" 2>/dev/null || echo "$now")
       age=$(( (now - last) / 86400 ))
-      [ "$age" -ge "$STALE_DAYS" ] || continue
-      note="no commits in ${age}d"
-      if is_linked_worktree "$d"; then note="$note; $(worktree_summary "$d")"; fi
+      if is_linked_worktree "$d"; then
+        worktree=1; limit="${WORKTREE_STALE_DAYS:-30}"
+      else
+        worktree=0; limit="${STALE_DAYS:-90}"
+      fi
+      [ "$age" -ge "$limit" ] || continue
+      if [ "$worktree" = 1 ]; then
+        note="no commits in ${age}d (worktree threshold ${limit}d); $(worktree_summary "$d")"
+      else
+        note="no commits in ${age}d (threshold ${limit}d)"
+      fi
       printf 'node_modules\t%s\t%s\t%s; regen: npm install\n' "$(dir_kb "$nm")" "$nm" "$note"
     done
   fi
