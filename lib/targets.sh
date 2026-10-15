@@ -259,10 +259,41 @@ runtime_kb() { # $1: runtime bundle path -> KB it holds on disk, or "?"
 # Items are enumerated dynamically; each is confirmed individually.
 # check_items prints: kind<TAB>kb<TAB>path-or-cmd<TAB>note
 
-# Checkouts that may hold a node_modules: each project dir, plus every
+# Stale project build artifacts: subdirectory -> CHECK kind -> regen command.
+# One line per project-local build artifact we know how to rebuild. A
+# candidate must also carry its tool's marker, so a folder that only shares
+# the name (an env/ of config files, a Maven target/) is never offered.
+PROJECT_ARTIFACT_SUBDIRS="node_modules target venv env"
+
+project_artifact_kind() {
+  case "$1" in
+    node_modules) echo "node_modules" ;;
+    target)       echo "rust-target" ;;
+    venv|env)     echo "venv" ;;
+  esac
+}
+
+project_artifact_regen() {
+  case "$1" in
+    node_modules) echo "npm install" ;;
+    target)       echo "cargo build" ;;
+    venv|env)     echo "python3 -m venv $1 && pip install -r requirements.txt" ;;
+  esac
+}
+
+project_artifact_is_real() { # $1: checkout, $2: subdir -> 0 if it is that tool's artifact
+  case "$2" in
+    node_modules) return 0 ;;
+    target)       [ -f "$1/Cargo.toml" ] ;;    # a Rust target/ sits next to Cargo.toml
+    venv|env)     [ -f "$1/$2/pyvenv.cfg" ] ;; # written by python -m venv and virtualenv
+    *)            return 1 ;;
+  esac
+}
+
+# Checkouts that may hold project artifacts: each project dir, plus every
 # linked git worktree of those repos wherever it lives (.claude/worktrees/*,
 # a sibling dir, /tmp) — git knows where. Each checkout is printed once.
-node_modules_checkouts() {
+project_checkouts() {
   local d w
   for d in "$PROJECTS_DIR"/*/; do
     [ -d "$d" ] || continue
@@ -281,11 +312,15 @@ is_linked_worktree() { # $1: dir -> 0 if a linked worktree (its .git file points
   [ -f "$1/.git" ] && grep -q '^gitdir: .*/worktrees/' "$1/.git" 2>/dev/null
 }
 
-worktree_summary() { # $1: dir -> "worktree on <branch>, clean|uncommitted changes"
-  local branch state
-  branch="$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null || echo "detached HEAD")"
+worktree_summary() { # $1: dir, rest: artifact subdirs -> "worktree on <branch>, clean|uncommitted changes"
+  local dir="$1" branch state sub
+  shift
+  branch="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null || echo "detached HEAD")"
+  # The artifacts on offer don't count as uncommitted work: rewrite the
+  # remaining args in place, each subdir becoming an exclude pathspec.
+  for sub in "$@"; do set -- "$@" ":(exclude)$sub"; shift; done
   # --no-optional-locks: status must not rewrite the index, scan is read-only
-  if [ -n "$(git --no-optional-locks -C "$1" status --porcelain -- . ':(exclude)node_modules' 2>/dev/null)" ]; then
+  if [ -n "$(git --no-optional-locks -C "$dir" status --porcelain -- . "$@" 2>/dev/null)" ]; then
     state="uncommitted changes"
   else
     state="clean"
@@ -294,33 +329,42 @@ worktree_summary() { # $1: dir -> "worktree on <branch>, clean|uncommitted chang
 }
 
 check_items() {
-  # Stale node_modules: checkouts with no commit on their own HEAD in
-  # STALE_DAYS days (repos) or WORKTREE_STALE_DAYS days (linked worktrees,
-  # which are usually short-lived). A worktree is judged by its own HEAD,
-  # not its main repo's.
+  # Stale project artifacts (node_modules, Rust target/, Python venv|env):
+  # checkouts with no commit on their own HEAD in STALE_DAYS days (repos) or
+  # WORKTREE_STALE_DAYS days (linked worktrees, which are usually
+  # short-lived). A worktree is judged by its own HEAD, not its main repo's.
   if [ -d "$PROJECTS_DIR" ]; then
-    local now d nm last age note limit worktree
+    local now d sub art arts last age note limit
     now=$(date +%s)
-    node_modules_checkouts | while IFS= read -r d; do
-      nm="$d/node_modules"
-      # A symlinked node_modules (common in worktrees) holds no space of its
-      # own; removing the link frees nothing, so it is not offered.
-      [ -d "$nm" ] && [ ! -L "$nm" ] || continue
+    project_checkouts | while IFS= read -r d; do
+      arts=""
+      for sub in $PROJECT_ARTIFACT_SUBDIRS; do
+        art="$d/$sub"
+        # A symlinked artifact (worktrees often link node_modules to the main
+        # checkout's) holds no space of its own; removing the link frees nothing.
+        [ -d "$art" ] && [ ! -L "$art" ] || continue
+        project_artifact_is_real "$d" "$sub" || continue
+        arts="$arts $sub"
+      done
+      [ -n "$arts" ] || continue
       last=$( (cd "$d" && git log -1 --format=%ct 2>/dev/null) || true )
       [ -n "$last" ] || last=$(stat -f %m "$d" 2>/dev/null || echo "$now")
       age=$(( (now - last) / 86400 ))
       if is_linked_worktree "$d"; then
-        worktree=1; limit="${WORKTREE_STALE_DAYS:-30}"
+        limit="${WORKTREE_STALE_DAYS:-30}"
+        [ "$age" -ge "$limit" ] || continue
+        # shellcheck disable=SC2086  # $arts: fixed subdir names, split on purpose
+        note="no commits in ${age}d (worktree threshold ${limit}d); $(worktree_summary "$d" $arts)"
       else
-        worktree=0; limit="${STALE_DAYS:-90}"
-      fi
-      [ "$age" -ge "$limit" ] || continue
-      if [ "$worktree" = 1 ]; then
-        note="no commits in ${age}d (worktree threshold ${limit}d); $(worktree_summary "$d")"
-      else
+        limit="${STALE_DAYS:-90}"
+        [ "$age" -ge "$limit" ] || continue
         note="no commits in ${age}d (threshold ${limit}d)"
       fi
-      printf 'node_modules\t%s\t%s\t%s; regen: npm install\n' "$(dir_kb "$nm")" "$nm" "$note"
+      for sub in $arts; do
+        art="$d/$sub"
+        printf '%s\t%s\t%s\t%s; regen: %s\n' "$(project_artifact_kind "$sub")" \
+          "$(dir_kb "$art")" "$art" "$note" "$(project_artifact_regen "$sub")"
+      done
     done
   fi
 
@@ -346,7 +390,7 @@ check_items() {
 
 check_apply() { # $1: kind, $2: path — the only delete verbs in CHECK tier
   case "$1" in
-    node_modules|xcode-archives|dot-cache) rm -rf "${2:?}" ;;
+    node_modules|rust-target|venv|xcode-archives|dot-cache) rm -rf "${2:?}" ;;
     *) echo "gigback: unknown CHECK kind '$1' — refusing" >&2; return 1 ;;
   esac
 }

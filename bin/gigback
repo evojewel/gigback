@@ -47,7 +47,8 @@ USAGE
 
 FLAGS
   --projects-dir <path>   Where your repos live (default ~/Projects)
-  --stale-days <n>        node_modules staleness threshold for repos (default 90)
+  --stale-days <n>        staleness threshold for project artifacts (node_modules,
+                          Rust target/, Python venv/env) in repos (default 90)
   --worktree-stale-days <n>
                           the same for linked git worktrees (default 30); each
                           checkout is judged by the last commit on its own HEAD

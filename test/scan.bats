@@ -41,6 +41,22 @@ teardown() { teardown_fixture; }
   [[ "$output" == *"node_modules"* ]]
 }
 
+@test "scan surfaces stale Rust target/ and Python venv/ as CHECK" {
+  run "$GIGBACK" scan --stale-days 0
+  [ "$status" -eq 0 ]
+  output_has "rust-target"
+  output_has "cargo build"
+  output_has "stale-py-app/venv"
+  output_has "python3 -m venv venv"
+}
+
+@test "a target/ without Cargo.toml or an env/ without pyvenv.cfg is never offered" {
+  run "$GIGBACK" scan --stale-days 0
+  [ "$status" -eq 0 ]
+  output_lacks "config-app/env"
+  output_lacks "maven-app/target"
+}
+
 @test "report never deletes and mentions the data-tier stance" {
   before="$(fixture_file_count)"
   run "$GIGBACK" report
