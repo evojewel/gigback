@@ -57,7 +57,7 @@ Every path gigback can touch lives in one reviewed table
 | Tier | What | Behavior |
 |---|---|---|
 | **SAFE** | Xcode DerivedData, app caches, npm/Gradle caches, orphaned simulator devices, superseded simulator runtimes | Deletable via `clean --apply`. Regenerates automatically. |
-| **CHECK** | `node_modules` in repos with no commits for 90+ days, Xcode archives, `~/.cache` entries | Regenerable, but context-dependent — each item is confirmed individually. Model caches are flagged (slow to re-download). |
+| **CHECK** | `node_modules` in repos — and in their linked git worktrees, wherever they live (e.g. `.claude/worktrees/*`) — with no commits for 90+ days on that checkout's own HEAD, Xcode archives, `~/.cache` entries | Regenerable, but context-dependent — each item is confirmed individually. Worktree items show their branch and whether they have uncommitted changes. Symlinked `node_modules` are skipped (they free nothing). Model caches are flagged (slow to re-download). |
 | **DATA** | Local Postgres/MySQL data dirs, editor state (VS Code / Cursor `globalStorage` holds your AI chat history), Application Support | **Report only. There is no code path in gigback that deletes these.** |
 | **MANUAL** | Regenerable things gigback can't remove without sudo: older bundle-style simulator runtimes | Sized and listed with how to remove them by hand (Xcode → Settings → Components). No delete code. |
 

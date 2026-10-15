@@ -128,3 +128,68 @@ SH
   # Also first on PATH, so code that ignores GB_XCRUN still gets the fake.
   export PATH="$sim/bin:$PATH"
 }
+
+# A repo under Projects with linked worktrees, modelled on Claude Code's
+# .claude/worktrees/*: staleness must be judged per worktree, not by the
+# main checkout. Commit dates are set explicitly; git config is isolated.
+#   app                       main checkout, fresh commit, node_modules
+#   app/.claude/worktrees/old stale (200d), clean, branch feat/old, node_modules
+#   app/.claude/worktrees/new fresh, branch feat/new, node_modules
+#   app/.claude/worktrees/linked  stale, node_modules is a symlink to app's
+#   app/.claude/worktrees/detached stale, detached HEAD, node_modules
+#   $FIXTURE/elsewhere/dirty  stale, uncommitted change, outside Projects
+#   Projects/app-feature      stale worktree that is also a top-level dir
+setup_worktree_fixture() {
+  export GIT_CONFIG_NOSYSTEM=1
+  export GIT_CONFIG_GLOBAL="$FIXTURE/gitconfig"
+  printf '[user]\n\tname = gigback test\n\temail = test@example.invalid\n[commit]\n\tgpgsign = false\n' \
+    > "$GIT_CONFIG_GLOBAL"
+
+  local now old app wt
+  now=$(date +%s)
+  old=$((now - 200 * 86400))
+  app="$GB_PROJECTS_DIR/app"
+  WT="$app/.claude/worktrees"
+
+  git init -q -b main "$app"
+  printf 'node_modules/\n.claude/\n' > "$app/.gitignore"
+  echo "app" > "$app/README"
+  git -C "$app" add . && commit_at "$app" "$now" "init"
+  add_node_modules "$app"
+
+  git -C "$app" worktree add -q -b feat/old "$WT/old"
+  commit_at "$WT/old" "$old" "old work"
+  add_node_modules "$WT/old"
+
+  git -C "$app" worktree add -q -b feat/new "$WT/new"
+  commit_at "$WT/new" "$now" "new work"
+  add_node_modules "$WT/new"
+
+  git -C "$app" worktree add -q -b feat/linked "$WT/linked"
+  commit_at "$WT/linked" "$old" "linked work"
+  ln -s "$app/node_modules" "$WT/linked/node_modules"
+
+  git -C "$app" worktree add -q --detach "$WT/detached"
+  commit_at "$WT/detached" "$old" "detached work"
+  add_node_modules "$WT/detached"
+
+  git -C "$app" worktree add -q -b fix/dirty "$FIXTURE/elsewhere/dirty"
+  commit_at "$FIXTURE/elsewhere/dirty" "$old" "dirty work"
+  echo "edit in progress" >> "$FIXTURE/elsewhere/dirty/README"
+  add_node_modules "$FIXTURE/elsewhere/dirty"
+
+  git -C "$app" worktree add -q -b feat/top "$GB_PROJECTS_DIR/app-feature"
+  commit_at "$GB_PROJECTS_DIR/app-feature" "$old" "top-level work"
+  add_node_modules "$GB_PROJECTS_DIR/app-feature"
+}
+
+commit_at() { # $1 dir, $2 epoch, $3 message — commit everything with that date
+  echo "$3" >> "$1/README"
+  git -C "$1" add -A
+  GIT_AUTHOR_DATE="$2 +0000" GIT_COMMITTER_DATE="$2 +0000" git -C "$1" commit -q -m "$3"
+}
+
+add_node_modules() { # $1 dir
+  mkdir -p "$1/node_modules/leftpad"
+  echo "lib" > "$1/node_modules/leftpad/index.js"
+}

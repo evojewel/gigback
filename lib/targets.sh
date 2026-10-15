@@ -259,21 +259,58 @@ runtime_kb() { # $1: runtime bundle path -> KB it holds on disk, or "?"
 # Items are enumerated dynamically; each is confirmed individually.
 # check_items prints: kind<TAB>kb<TAB>path-or-cmd<TAB>note
 
+# Checkouts that may hold a node_modules: each project dir, plus every
+# linked git worktree of those repos wherever it lives (.claude/worktrees/*,
+# a sibling dir, /tmp) — git knows where. Each checkout is printed once.
+node_modules_checkouts() {
+  local d w
+  for d in "$PROJECTS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"
+    echo "$d"
+    [ -e "$d/.git" ] || continue
+    # first entry is the main checkout, which the glob already covers
+    git -C "$d" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | sed 1d
+  done | while IFS= read -r w; do
+    [ -d "$w" ] || continue # prunable: the worktree dir is gone
+    printf '%s\t%s\n' "$(cd "$w" && pwd -P)" "$w"
+  done | awk -F'\t' '!seen[$1]++ { print $2 }'
+}
+
+is_linked_worktree() { # $1: dir -> 0 if a linked worktree (its .git file points into .git/worktrees/)
+  [ -f "$1/.git" ] && grep -q '^gitdir: .*/worktrees/' "$1/.git" 2>/dev/null
+}
+
+worktree_summary() { # $1: dir -> "worktree on <branch>, clean|uncommitted changes"
+  local branch state
+  branch="$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null || echo "detached HEAD")"
+  # --no-optional-locks: status must not rewrite the index, scan is read-only
+  if [ -n "$(git --no-optional-locks -C "$1" status --porcelain -- . ':(exclude)node_modules' 2>/dev/null)" ]; then
+    state="uncommitted changes"
+  else
+    state="clean"
+  fi
+  echo "worktree on $branch, $state"
+}
+
 check_items() {
-  # Stale node_modules: projects with no git commit in STALE_DAYS days
+  # Stale node_modules: checkouts with no commit on their own HEAD in
+  # STALE_DAYS days. A worktree is judged by its HEAD, not its main repo's.
   if [ -d "$PROJECTS_DIR" ]; then
-    local now d nm last age
+    local now d nm last age note
     now=$(date +%s)
-    for d in "$PROJECTS_DIR"/*/; do
-      [ -d "$d" ] || continue
-      nm="${d%/}/node_modules"
-      [ -d "$nm" ] || continue
+    node_modules_checkouts | while IFS= read -r d; do
+      nm="$d/node_modules"
+      # A symlinked node_modules (common in worktrees) holds no space of its
+      # own; removing the link frees nothing, so it is not offered.
+      [ -d "$nm" ] && [ ! -L "$nm" ] || continue
       last=$( (cd "$d" && git log -1 --format=%ct 2>/dev/null) || true )
       [ -n "$last" ] || last=$(stat -f %m "$d" 2>/dev/null || echo "$now")
       age=$(( (now - last) / 86400 ))
       [ "$age" -ge "$STALE_DAYS" ] || continue
-      printf 'node_modules\t%s\t%s\tno commits in %sd; regen: npm install\n' \
-        "$(dir_kb "$nm")" "$nm" "$age"
+      note="no commits in ${age}d"
+      if is_linked_worktree "$d"; then note="$note; $(worktree_summary "$d")"; fi
+      printf 'node_modules\t%s\t%s\t%s; regen: npm install\n' "$(dir_kb "$nm")" "$nm" "$note"
     done
   fi
 

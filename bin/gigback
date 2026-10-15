@@ -46,7 +46,8 @@ USAGE
 
 FLAGS
   --projects-dir <path>   Where your repos live (default ~/Projects)
-  --stale-days <n>        node_modules staleness threshold (default 90)
+  --stale-days <n>        node_modules staleness threshold (default 90), judged per
+                          checkout: each repo and each of its linked git worktrees
   --keep-runtime <ver>    iOS runtime version to keep besides the newest (repeatable)
   --yes                   Skip the SAFE confirm. Refused together with --check.
   --json                  Machine-readable scan output
