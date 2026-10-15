@@ -27,6 +27,19 @@ setup_fixture() {
 
   mkdir -p "$FIXTURE/log"
 
+  # Guard: refusing stand-ins for xcrun, hdiutil and npm first on PATH, so no
+  # test can reach the real tools even if a GB_* fence is missed (or the
+  # tests run against older code). They log to guard.log and fail.
+  # use_fake_simctl puts its answering fakes ahead of these.
+  mkdir -p "$FIXTURE/guard-bin"
+  local tool
+  for tool in xcrun hdiutil npm; do
+    printf '#!/bin/bash\necho "%s $*" >> "%s"\nexit 1\n' "$tool" "$FIXTURE/guard.log" \
+      > "$FIXTURE/guard-bin/$tool"
+    chmod +x "$FIXTURE/guard-bin/$tool"
+  done
+  export PATH="$FIXTURE/guard-bin:$PATH"
+
   export GB_DERIVED_DATA="$FIXTURE/DerivedData"
   export GB_USER_CACHES="$FIXTURE/Caches"
   export GB_GRADLE_CACHES="$FIXTURE/gradle-caches"
