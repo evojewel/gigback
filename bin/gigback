@@ -20,8 +20,9 @@ while [ -L "$SOURCE" ]; do
 done
 GB_ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 
-# Defaults for flags (lib reads STALE_DAYS / KEEP_RUNTIMES)
+# Defaults for flags (lib reads STALE_DAYS / WORKTREE_STALE_DAYS / KEEP_RUNTIMES)
 STALE_DAYS=90
+WORKTREE_STALE_DAYS=30
 KEEP_RUNTIMES=""
 APPLY=0
 CHECK=0
@@ -46,8 +47,10 @@ USAGE
 
 FLAGS
   --projects-dir <path>   Where your repos live (default ~/Projects)
-  --stale-days <n>        node_modules staleness threshold (default 90), judged per
-                          checkout: each repo and each of its linked git worktrees
+  --stale-days <n>        node_modules staleness threshold for repos (default 90)
+  --worktree-stale-days <n>
+                          the same for linked git worktrees (default 30); each
+                          checkout is judged by the last commit on its own HEAD
   --keep-runtime <ver>    iOS runtime version to keep besides the newest (repeatable)
   --yes                   Skip the SAFE confirm. Refused together with --check.
   --json                  Machine-readable scan output
@@ -250,6 +253,9 @@ while [ $# -gt 0 ]; do
     --stale-days) shift; [ $# -gt 0 ] || die "--stale-days needs a number"
       case "$1" in ''|*[!0-9]*) die "--stale-days must be a number" ;; esac
       STALE_DAYS="$1" ;;
+    --worktree-stale-days) shift; [ $# -gt 0 ] || die "--worktree-stale-days needs a number"
+      case "$1" in ''|*[!0-9]*) die "--worktree-stale-days must be a number" ;; esac
+      WORKTREE_STALE_DAYS="$1" ;;
     --keep-runtime) shift; [ $# -gt 0 ] || die "--keep-runtime needs a version"; KEEP_RUNTIMES="$KEEP_RUNTIMES $1" ;;
     *) die "unknown flag '$1' (see gigback --help)" ;;
   esac
