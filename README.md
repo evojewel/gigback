@@ -44,11 +44,59 @@ gigback clean --apply   # execute the SAFE plan (one y/N confirm)
 gigback clean --check   # also offer CHECK items, each confirmed one by one
 gigback report          # DATA tier: databases & editor state — sized, never deleted
 gigback log             # what past runs deleted, when, how much
+gigback history         # recent runs: free-space trend and what grew most
 ```
 
 Flags: `--projects-dir <path>` (default `~/Projects`) · `--stale-days <n>` (default 90) ·
 `--worktree-stale-days <n>` (default 30, linked git worktrees) ·
-`--keep-runtime <ver>` (repeatable) · `--yes` (SAFE tier only) · `--json`
+`--keep-runtime <ver>` (repeatable) · `--yes` (SAFE tier only) · `--json` (scan, history) ·
+`--last <n>` (history, default 10) · `--no-history`
+
+## Run history
+
+One scan shows what is big. Only a series shows what is **growing** — which is the question
+when free space keeps dropping. So every `scan`, `clean` (dry run included) and `report`
+appends one line to `~/.gigback/history.jsonl`, and `gigback history` reads them back:
+
+```
+gigback history — last 2 runs (~/.gigback/history.jsonl)
+
+WHEN (UTC)        COMMAND            FREE      SAFE     CHECK    MANUAL      DATA  TM SNAPSHOTS
+2026-10-20 06:00  scan            23.0 GB    1.0 GB      0 KB      0 KB   10.0 GB  3
+2026-10-20 08:00  scan            13.0 GB    1.0 GB      0 KB      0 KB   12.0 GB  9
+
+Free space: 23.0 GB -> 13.0 GB over 2h 0m (-5.0 GB per hour)
+
+Grew most between the first and last run shown (items both runs measured):
+  +2.0 GB    DATA    app-support    ~/Library/Application Support/Cursor
+
+Free space fell 10.0 GB; what both runs measured changed by 2.0 GB.
+About 8.0 GB went somewhere gigback does not measure (Time Machine local snapshots,
+system updates, other folders). Snapshots: 3 -> 9.
+```
+
+`gigback history --json` prints the same runs as a JSON array for your own analysis
+(`--last <n>` picks how many). `gigback log` is unchanged: it still lists deletions only.
+
+**What a record holds:** time (UTC and epoch), gigback version, command and mode (`dry-run`,
+`apply`, `check`), disk total and free (and free at the start of the run), the number of
+Time Machine local snapshots, a total per tier, and every size the run measured — tier, id,
+KB and path. Paths under your home folder are stored as `~/…`. A tier the run didn't look at
+is `null`, not `0` (a dry-run `clean` doesn't size CHECK), so a trend never counts a skipped
+tier as an empty one. Sizes gigback can't measure (simulator targets) are `null` too.
+
+**What it never holds:** file contents, and Postgres database names (`report` prints them,
+history doesn't keep them).
+
+**Bounded:** the newest 1000 runs are kept (a few MB at most); set
+`GIGBACK_HISTORY_MAX=<n>` to change that. Older lines are trimmed from the file itself.
+
+**Off:** `--no-history` for one run, or `GIGBACK_NO_HISTORY=1` for all of them. Delete
+`~/.gigback/history.jsonl` to forget what was recorded.
+
+History only ever appends to, trims and reads its own file — it has no delete path for
+anything else, and if the file can't be written the command runs and exits exactly as it
+would have. It measures nothing new either: it records what the run already measured.
 
 ## The safety model
 
@@ -110,12 +158,12 @@ appear on the **MANUAL** list with their size; gigback has no way to remove them
 ```bash
 git clone https://github.com/evojewel/gigback && cd gigback
 ./bin/gigback scan          # runs from the checkout
-shellcheck bin/gigback lib/targets.sh
+shellcheck bin/gigback lib/*.sh
 bats test                   # brew install bats-core
 ```
 
 Tests run entirely against fixture trees — `GB_*` environment variables point every path
-at a temp dir, and `GB_NO_SIMCTL` / `GB_NO_NPM` keep the real system out of reach.
+at a temp dir, and `GB_NO_SIMCTL` / `GB_NO_NPM` / `GB_NO_TMUTIL` keep the real system out of reach.
 Simulator tests use fake `xcrun` / `hdiutil` scripts (`GB_XCRUN`, `GB_HDIUTIL`, see
 `use_fake_simctl` in `test/helpers.bash`) that answer from fixture state and log every call;
 `$SIM_DIR/delete-mode` picks how a fake `runtime delete` behaves (removed / left / stuck / fail).
