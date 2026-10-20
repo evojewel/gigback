@@ -28,9 +28,13 @@ APPLY=0
 CHECK=0
 YES=0
 JSON=0
+NO_HISTORY=0
+HISTORY_LAST=""
 
 # shellcheck source=lib/targets.sh
 . "$GB_ROOT/lib/targets.sh"
+# shellcheck source=lib/history.sh
+. "$GB_ROOT/lib/history.sh"
 
 usage() {
   cat <<'EOF'
@@ -43,6 +47,7 @@ USAGE
   gigback clean --check       Include CHECK tier; every item confirmed one by one
   gigback report              DATA tier sizes and guidance. Never deletes.
   gigback log                 Show what past runs deleted
+  gigback history             Recent runs: free-space trend and what grew most
   gigback --version | --help
 
 FLAGS
@@ -54,7 +59,9 @@ FLAGS
                           checkout is judged by the last commit on its own HEAD
   --keep-runtime <ver>    iOS runtime version to keep besides the newest (repeatable)
   --yes                   Skip the SAFE confirm. Refused together with --check.
-  --json                  Machine-readable scan output
+  --json                  Machine-readable scan or history output
+  --last <n>              Runs 'history' shows and compares (default 10)
+  --no-history            Don't record this run (or set GIGBACK_NO_HISTORY=1)
 
 TIERS
   SAFE   caches & build artifacts that regenerate automatically
@@ -92,9 +99,11 @@ cmd_scan() {
   if [ "$JSON" = 1 ]; then
     printf '{"free_kb":%s,"targets":[' "$free"
     local first=1
+    hist_measured SAFE; hist_measured CHECK; hist_measured MANUAL
     for id in $SAFE_IDS; do
       safe_present "$id" || continue
       kb="$(safe_size_kb "$id")"
+      hist_item SAFE "$id" "$kb" "$(safe_path "$id")"
       [ "$kb" = "?" ] && kb=null
       [ $first = 0 ] && printf ','
       printf '{"id":"%s","tier":"SAFE","kb":%s,"path":"%s"}' "$id" "$kb" "$(safe_path "$id")"
@@ -102,6 +111,7 @@ cmd_scan() {
     done
     while IFS=$(printf '\t') read -r kind kb path note; do
       [ -n "$kind" ] || continue
+      hist_item CHECK "$kind" "$kb" "$path"
       [ $first = 0 ] && printf ','
       printf '{"id":"%s","tier":"CHECK","kb":%s,"path":"%s"}' "$kind" "$kb" "$path"
       first=0
@@ -110,6 +120,7 @@ $(check_items)
 EOF
     while IFS=$(printf '\t') read -r kind kb path note; do
       [ -n "$kind" ] || continue
+      hist_item MANUAL "$kind" "$kb" "$path"
       [ "$kb" = "?" ] && kb=null
       [ $first = 0 ] && printf ','
       printf '{"id":"%s","tier":"MANUAL","kb":%s,"path":"%s"}' "$kind" "$kb" "$path"
@@ -124,15 +135,20 @@ EOF
   echo "gigback scan — free space on /: $(human_kb "$free")"
   echo ""
   echo "SAFE (regenerates automatically — 'gigback clean --apply'):"
+  hist_measured SAFE
   for id in $SAFE_IDS; do
     safe_present "$id" || continue
-    printf '  %-10s %-14s %s\n' "$(human_kb "$(safe_size_kb "$id")")" "$id" "$(safe_desc "$id")"
+    kb="$(safe_size_kb "$id")"
+    hist_item SAFE "$id" "$kb" "$(safe_path "$id")"
+    printf '  %-10s %-14s %s\n' "$(human_kb "$kb")" "$id" "$(safe_desc "$id")"
   done
   echo ""
   echo "CHECK (regenerable, needs judgment — 'gigback clean --check'):"
+  hist_measured CHECK
   local any=0
   while IFS=$(printf '\t') read -r kind kb path note; do
     [ -n "$kind" ] || continue
+    hist_item CHECK "$kind" "$kb" "$path"
     any=1
     printf '  %-10s %-14s %s  (%s)\n' "$(human_kb "$kb")" "$kind" "$path" "$note"
   done <<EOF
@@ -147,10 +163,12 @@ EOF
 manual_section() { # MANUAL list, or nothing when it's empty
   local items kind kb what how
   items="$(manual_items)"
+  hist_measured MANUAL
   [ -n "$items" ] || return 0
   echo ""
   echo "MANUAL (gigback can't remove these — sizes, and what you can do by hand):"
   while IFS=$(printf '\t') read -r kind kb what how; do
+    hist_item MANUAL "$kind" "$kb" "$what"
     printf '  %-10s %-14s %s\n             %s\n' "$(human_kb "$kb")" "$kind" "$what" "$how"
   done <<EOF
 $items
@@ -165,9 +183,11 @@ cmd_clean() {
 
   local id kb total=0 listed=0
   echo "SAFE plan — each line names how it regenerates:"
+  hist_measured SAFE
   for id in $SAFE_IDS; do
     safe_present "$id" || continue
     kb="$(safe_size_kb "$id")"
+    hist_item SAFE "$id" "$kb" "$(safe_path "$id")"
     printf '  %-10s %-14s %s\n             regen: %s\n' \
       "$(human_kb "$kb")" "$id" "$(safe_desc "$id")" "$(safe_regen "$id")"
     [ "$kb" != "?" ] && total=$((total + kb))
@@ -208,9 +228,11 @@ cmd_clean() {
     local kind path note tmp
     tmp="$(mktemp)"
     check_items > "$tmp"
+    hist_measured CHECK
     # Items come in on fd 3 so confirm() can still read answers from stdin
     while IFS=$(printf '\t') read -r kind kb path note <&3; do
       [ -n "$kind" ] || continue
+      hist_item CHECK "$kind" "$kb" "$path"
       echo ""
       printf '  %-10s %s\n  %s\n' "$(human_kb "$kb")" "$path" "$note"
       if confirm "  Delete this?"; then
@@ -252,6 +274,10 @@ while [ $# -gt 0 ]; do
     --check) CHECK=1 ;;
     --yes) YES=1 ;;
     --json) JSON=1 ;;
+    --no-history) NO_HISTORY=1 ;;
+    --last) shift; [ $# -gt 0 ] || die "--last needs a number"
+      case "$1" in ''|*[!0-9]*|0) die "--last must be a positive number" ;; esac
+      HISTORY_LAST="$1" ;;
     --projects-dir) shift; [ $# -gt 0 ] || die "--projects-dir needs a path"; PROJECTS_DIR="$1" ;;
     --stale-days) shift; [ $# -gt 0 ] || die "--stale-days needs a number"
       case "$1" in ''|*[!0-9]*) die "--stale-days must be a number" ;; esac
@@ -265,11 +291,20 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+clean_mode() {
+  if [ "$APPLY" = 1 ] && [ "$CHECK" = 1 ]; then echo apply+check
+  elif [ "$APPLY" = 1 ]; then echo apply
+  elif [ "$CHECK" = 1 ]; then echo check
+  else echo dry-run; fi
+}
+
+# scan, clean and report each leave one history record; history and log don't.
 case "$CMD" in
-  scan) cmd_scan ;;
-  clean) cmd_clean ;;
-  report) data_report; manual_section ;;
+  scan) history_begin; cmd_scan; history_end scan "$([ "$JSON" = 1 ] && echo json)" ;;
+  clean) history_begin; cmd_clean; history_end clean "$(clean_mode)" ;;
+  report) history_begin; data_report; manual_section; history_end report "" ;;
   log) cmd_log ;;
+  history) cmd_history ;;
   --version|-v|version) echo "gigback $VERSION" ;;
   --help|-h|help) usage ;;
   *) die "unknown command '$CMD' (see gigback --help)" ;;

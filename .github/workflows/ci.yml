@@ -13,6 +13,6 @@ jobs:
       - name: Install shellcheck + bats
         run: brew install shellcheck bats-core
       - name: Lint
-        run: shellcheck bin/gigback lib/targets.sh
+        run: shellcheck bin/gigback lib/*.sh
       - name: Test
         run: bats test

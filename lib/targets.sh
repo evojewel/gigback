@@ -500,15 +500,18 @@ manual_items() {
 # these. That absence is deliberate — do not add one.
 
 data_report() {
-  local d found
+  local d found kb
   echo "DATA tier — gigback never deletes these; sizes for your own review:"
   echo ""
 
   found=0
+  hist_measured DATA
   for d in "$BREW_VAR"/postgresql* "$BREW_VAR"/postgres "$BREW_VAR"/mysql*; do
     [ -d "$d" ] || continue
     found=1
-    printf '  %-10s %s\n' "$(human_kb "$(dir_kb "$d")")" "$d"
+    kb="$(dir_kb "$d")"
+    hist_item DATA database "$kb" "$d"
+    printf '  %-10s %s\n' "$(human_kb "$kb")" "$d"
   done
   if [ "$found" = 1 ]; then
     if pgrep -x postgres >/dev/null 2>&1 && command -v psql >/dev/null 2>&1; then
@@ -529,13 +532,16 @@ data_report() {
   echo "  Editor state (contains AI chat history — deleting erases it):"
   for d in "$APP_SUPPORT/Code/User/globalStorage" "$APP_SUPPORT/Cursor/User/globalStorage"; do
     [ -d "$d" ] || continue
-    printf '  %-10s %s\n' "$(human_kb "$(dir_kb "$d")")" "$d"
+    kb="$(dir_kb "$d")"
+    hist_item DATA editor-state "$kb" "$d"
+    printf '  %-10s %s\n' "$(human_kb "$kb")" "$d"
   done
 
   echo ""
   echo "  Largest Application Support entries (mixed junk + real data — review by hand):"
   du -sk "$APP_SUPPORT"/* 2>/dev/null | sort -rn | head -5 \
     | while IFS=$(printf '\t') read -r kb path; do
+        hist_item DATA app-support "$kb" "$path"
         printf '  %-10s %s\n' "$(human_kb "$kb")" "$path"
       done
 }
