@@ -63,6 +63,7 @@ setup_fixture() {
   export GB_APP_SUPPORT="$FIXTURE/AppSupport"
   export GB_BREW_VAR="$FIXTURE/brew-var"
   export GB_LOG_DIR="$FIXTURE/log"
+  export GB_NO_TMUTIL=1                           # never read the real snapshot list
   export GB_NO_SIMCTL=1                            # never touch real simulators
   export GB_NO_NPM=1                               # never touch the real npm cache
   export GB_SIM_ASSETS="$FIXTURE/sim-assets"       # never read the real MobileAsset store
@@ -85,8 +86,10 @@ output_lacks() {
   [[ "$output" != *"$1"* ]] || { echo "expected output not to contain: $1"; return 1; }
 }
 
+# The user's files only: gigback's own log directory (log.jsonl, history.jsonl)
+# is written by every run by design.
 fixture_file_count() {
-  find "$FIXTURE" -type f | wc -l | tr -d ' '
+  find "$FIXTURE" -path "$GB_LOG_DIR" -prune -o -type f -print | wc -l | tr -d ' '
 }
 
 # Fake xcrun + hdiutil that answer from fixture state modelled on a real Mac

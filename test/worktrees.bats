@@ -54,7 +54,7 @@ teardown() { teardown_fixture; }
   sleep 1; touch "$GIT_CONFIG_GLOBAL"
   run "$GIGBACK" scan
   [ "$status" -eq 0 ]
-  [ "$(find "$FIXTURE" -newer "$GIT_CONFIG_GLOBAL" | wc -l | tr -d ' ')" -eq 0 ]
+  [ "$(find "$FIXTURE" -path "$GB_LOG_DIR" -prune -o -newer "$GIT_CONFIG_GLOBAL" -print | wc -l | tr -d ' ')" -eq 0 ]
 }
 
 @test "the clean --check plan line shows branch and state before each confirm" {
